@@ -21,12 +21,26 @@ use Neos\Media\Domain\Model\AssetInterface;
 use Neos\ContentRepository\Domain\Model\NodeType;
 use Neos\ContentRepository\Search\Exception\IndexingException;
 use Psr\Log\LoggerInterface;
+use Litefyr\Presentation\EelHelper\PresentationHelper;
 
 /**
  * IndexingHelper
  */
 class IndexingHelper implements ProtectedContextAwareInterface
 {
+    /**
+     * @Flow\InjectConfiguration(package="Litefyr.Meilisearch", path="fulltextPlain")
+     * @var string
+     */
+    protected $fulltextPlain;
+
+    /**
+     * @Flow\Inject
+     * @var PresentationHelper
+     */
+    protected $presentationHelper;
+
+
     /**
      * @Flow\Inject
      * @var AssetExtractorInterface
@@ -150,6 +164,14 @@ class IndexingHelper implements ProtectedContextAwareInterface
         return $nodeProperties;
     }
 
+    private function litefyrCleanup($string) {
+        // Remove ⚑, as it get replaced with the logo
+        $string = str_replace('⚑', '', (string) $string);
+
+        // Remove typewriter
+        return $this->presentationHelper->removeTypewriter($string);
+    }
+
     /**
      *
      * @param $string
@@ -163,12 +185,22 @@ class IndexingHelper implements ProtectedContextAwareInterface
 
         // prevents concatenated words when stripping tags afterwards
         $string = str_replace(['<', '>'], [' <', '> '], $string);
+
+        $string = $this->litefyrCleanup($string);
+
+        $parts = [
+            'text' => '',
+        ];
+
+        if ($this->fulltextPlain) {
+            $plainText = strip_tags($string);
+            $plainText = preg_replace('/\s+/u', ' ', $plainText);
+            $parts['text'] = $plainText;
+        }
+
         // strip all tags except h1-6
         $string = strip_tags($string, '<h1><h2><h3><h4><h5><h6>');
 
-        $parts = [
-            'text' => ''
-        ];
         while ($string !== '') {
             $matches = [];
             if (preg_match('/<(h1|h2|h3|h4|h5|h6)[^>]*>.*?<\/\1>/ui', $string, $matches, PREG_OFFSET_CAPTURE)) {
@@ -177,7 +209,9 @@ class IndexingHelper implements ProtectedContextAwareInterface
                 $tagName = $matches[1][0];
 
                 if ($startOfMatch > 0) {
-                    $parts['text'] .= substr($string, 0, $startOfMatch);
+                    if (!$this->fulltextPlain) {
+                        $parts['text'] .= substr($string, 0, $startOfMatch);
+                    }
                     $string = substr($string, $startOfMatch);
                 }
                 if (!isset($parts[$tagName])) {
@@ -188,7 +222,9 @@ class IndexingHelper implements ProtectedContextAwareInterface
                 $string = substr($string, strlen($fullMatch));
             } else {
                 // no h* found anymore in the remaining string
-                $parts['text'] .= $string;
+                if (!$this->fulltextPlain) {
+                    $parts['text'] .= $string;
+                }
                 break;
             }
         }
@@ -207,6 +243,15 @@ class IndexingHelper implements ProtectedContextAwareInterface
      */
     public function extractInto(string $bucketName, $string): array
     {
+        $string = $this->litefyrCleanup($string);
+
+        if ($this->fulltextPlain) {
+            return [
+                'text' => (string)$string,
+                $bucketName => (string)$string
+            ];
+        }
+
         return [
             $bucketName => (string)$string
         ];
